@@ -1,6 +1,7 @@
 # go-limit
 
 A simple, thread-safe connection limiter for Go's `net.Listener` that manages concurrent connections and rate limiting.
+Factored out from sam-forwarder to be used in go-i2ptunnel.
 
 ## Install
 
