@@ -1,6 +1,6 @@
 package limitedlistener
 
-type LimitConfig struct {
+type LimitedConfig struct {
 	MaxConns  int
 	RateLimit float64
 }
