@@ -1,6 +1,7 @@
 package limitedlistener
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -311,4 +312,96 @@ func TestSlotReservationRaceCondition(t *testing.T) {
 	connMutex.Unlock()
 
 	t.Logf("Successfully limited to %d connections (limit: 3)", actualCount)
+}
+
+// doubleCloseMockConn tracks how many times Close() is called
+type doubleCloseMockConn struct {
+	*mockConn
+	closeCount int32
+	mu         sync.Mutex
+}
+
+func (d *doubleCloseMockConn) Close() error {
+	d.mu.Lock()
+	d.closeCount++
+	closedTimes := d.closeCount
+	d.mu.Unlock()
+
+	if closedTimes > 1 {
+		panic(fmt.Sprintf("Connection closed %d times - double close detected!", closedTimes))
+	}
+
+	return d.mockConn.Close()
+}
+
+func (d *doubleCloseMockConn) getCloseCount() int32 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.closeCount
+}
+
+func TestDoubleClosePreevention(t *testing.T) {
+	mockL := newMockListener()
+	defer mockL.Close()
+
+	limited := NewLimitedListener(mockL, WithMaxConnections(5))
+
+	// Create special mock connections that track close calls
+	doubleCloseMocks := make([]*doubleCloseMockConn, 3)
+	for i := 0; i < 3; i++ {
+		doubleCloseMocks[i] = &doubleCloseMockConn{
+			mockConn: &mockConn{},
+		}
+		mockL.sendConn(doubleCloseMocks[i])
+	}
+
+	// Accept the connections
+	var connections []net.Conn
+	for i := 0; i < 3; i++ {
+		conn, err := limited.Accept()
+		if err != nil {
+			t.Fatalf("Failed to accept connection %d: %v", i, err)
+		}
+		connections = append(connections, conn)
+	}
+
+	// Close the first connection manually (user close)
+	err := connections[0].Close()
+	if err != nil {
+		t.Fatalf("Failed to close connection manually: %v", err)
+	}
+
+	// Verify it was closed once
+	if doubleCloseMocks[0].getCloseCount() != 1 {
+		t.Errorf("Expected connection 0 to be closed once, got %d times", doubleCloseMocks[0].getCloseCount())
+	}
+
+	// Now close the listener - this should close remaining connections but NOT double-close the first one
+	err = limited.Close()
+	if err != nil {
+		t.Fatalf("Failed to close listener: %v", err)
+	}
+
+	// Verify close counts
+	for i, mock := range doubleCloseMocks {
+		closeCount := mock.getCloseCount()
+		if closeCount != 1 {
+			t.Errorf("Connection %d should be closed exactly once, but was closed %d times", i, closeCount)
+		}
+	}
+
+	// Test idempotent close - closing already closed connections should be safe
+	for i, conn := range connections {
+		err := conn.Close()
+		if err != nil {
+			t.Errorf("Idempotent close of connection %d should not return error: %v", i, err)
+		}
+
+		// Close count should still be 1 (idempotent)
+		if doubleCloseMocks[i].getCloseCount() != 1 {
+			t.Errorf("After idempotent close, connection %d close count should still be 1, got %d", i, doubleCloseMocks[i].getCloseCount())
+		}
+	}
+
+	t.Log("Double close prevention test passed - all connections closed exactly once")
 }
