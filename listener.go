@@ -7,7 +7,6 @@ func NewLimitedListener(listener net.Listener, opts ...Option) *LimitedListener 
 	l := &LimitedListener{
 		Listener:  listener,
 		maxConns:  1000, // default limit
-		done:      make(chan struct{}),
 		activeSet: make(map[net.Conn]struct{}),
 	}
 

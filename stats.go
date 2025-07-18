@@ -34,6 +34,5 @@ func (l *LimitedListener) Close() error {
 		conn.Close()
 	}
 
-	close(l.done)
 	return l.Listener.Close()
 }

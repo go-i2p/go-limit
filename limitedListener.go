@@ -15,7 +15,6 @@ type LimitedListener struct {
 	activeConns int64
 	limiter     *rate.Limiter
 	mu          sync.Mutex
-	done        chan struct{}
 	activeSet   map[net.Conn]struct{}
 }
 
