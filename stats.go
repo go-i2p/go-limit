@@ -1,5 +1,7 @@
 package limitedlistener
 
+import "net"
+
 // Stats provides current listener statistics
 type Stats struct {
 	ActiveConnections int64
@@ -27,10 +29,15 @@ func (l *LimitedListener) GetStats() Stats {
 // Close implements graceful shutdown
 func (l *LimitedListener) Close() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	// Close all active connections
+	// Create a slice of connections to close, so we can release the lock
+	connections := make([]net.Conn, 0, len(l.activeSet))
 	for conn := range l.activeSet {
+		connections = append(connections, conn)
+	}
+	l.mu.Unlock()
+
+	// Close all active connections outside the lock to avoid deadlock
+	for _, conn := range connections {
 		conn.Close()
 	}
 

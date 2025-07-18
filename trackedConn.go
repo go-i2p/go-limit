@@ -14,11 +14,16 @@ type trackedConn struct {
 
 // Close implements net.Conn Close with connection tracking
 func (c *trackedConn) Close() error {
+	var closeErr error
 	c.once.Do(func() {
+		// Remove from active set and decrement counter atomically
 		c.listener.mu.Lock()
 		delete(c.listener.activeSet, c)
 		c.listener.activeConns--
 		c.listener.mu.Unlock()
+
+		// Close the underlying connection
+		closeErr = c.Conn.Close()
 	})
-	return c.Conn.Close()
+	return closeErr
 }

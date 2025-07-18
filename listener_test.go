@@ -17,7 +17,7 @@ type mockListener struct {
 
 func newMockListener() *mockListener {
 	return &mockListener{
-		connChan: make(chan net.Conn, 10),
+		connChan: make(chan net.Conn, 100),
 		errChan:  make(chan error, 10),
 	}
 }
@@ -171,4 +171,83 @@ func TestConnectionLimitEnforcement(t *testing.T) {
 		t.Error("Connection should be nil when limit is reached")
 		conn2.Close()
 	}
+}
+
+func TestActiveSetDataRace(t *testing.T) {
+	mockL := newMockListener()
+	defer mockL.Close()
+
+	limited := NewLimitedListener(mockL, WithMaxConnections(10))
+
+	// Pre-populate with exactly enough connections to avoid blocking
+	for i := 0; i < 15; i++ {
+		mockL.sendConn(&mockConn{})
+	}
+
+	var wg sync.WaitGroup
+	connections := make([]net.Conn, 0, 10)
+	connMutex := sync.Mutex{}
+
+	// Accept 10 connections concurrently
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := limited.Accept()
+			if err == nil && conn != nil {
+				connMutex.Lock()
+				connections = append(connections, conn)
+				connMutex.Unlock()
+			}
+		}()
+	}
+
+	// Wait for accepts to complete
+	wg.Wait()
+
+	// Now close some connections concurrently to test the race condition
+	wg.Add(5)
+	for i := 0; i < 5; i++ {
+		go func() {
+			defer wg.Done()
+			connMutex.Lock()
+			if len(connections) > 0 {
+				conn := connections[len(connections)-1]
+				connections = connections[:len(connections)-1]
+				connMutex.Unlock()
+				conn.Close()
+			} else {
+				connMutex.Unlock()
+			}
+		}()
+	}
+
+	// Also test listener close concurrent with connection operations
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(10 * time.Millisecond) // Brief delay to let some closes happen
+		limited.Close()
+	}()
+
+	// Wait for all operations to complete
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - no race detected
+	case <-time.After(1 * time.Second):
+		t.Fatal("Test timed out - possible deadlock or race")
+	}
+
+	// Clean up any remaining connections
+	connMutex.Lock()
+	for _, conn := range connections {
+		conn.Close()
+	}
+	connMutex.Unlock()
 }
