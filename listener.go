@@ -28,17 +28,24 @@ func (l *LimitedListener) Accept() (net.Conn, error) {
 			}
 		}
 
-		// Check concurrent connection limit
+		// Check concurrent connection limit and reserve a slot atomically
 		l.mu.Lock()
 		if l.maxConns > 0 && l.activeConns >= int64(l.maxConns) {
 			l.mu.Unlock()
 			return nil, ErrMaxConnsReached
 		}
+
+		// Reserve the connection slot before accepting
+		l.activeConns++
 		l.mu.Unlock()
 
 		// Accept the connection
 		conn, err := l.Listener.Accept()
 		if err != nil {
+			// If accept fails, we need to release the reserved slot
+			l.mu.Lock()
+			l.activeConns--
+			l.mu.Unlock()
 			return nil, err
 		}
 
@@ -48,8 +55,8 @@ func (l *LimitedListener) Accept() (net.Conn, error) {
 			listener: l,
 		}
 
+		// Add to active set (we already incremented the counter)
 		l.mu.Lock()
-		l.activeConns++
 		l.activeSet[tracked] = struct{}{}
 		l.mu.Unlock()
 
