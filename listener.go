@@ -58,5 +58,4 @@ func (l *LimitedListener) Accept() (net.Conn, error) {
 	l.mu.Unlock()
 
 	return tracked, nil
-
 }
