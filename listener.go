@@ -26,28 +26,24 @@ func (l *LimitedListener) Accept() (net.Conn, error) {
 		}
 	}
 
-	// Check concurrent connection limit
+	// Atomically reserve a connection slot before calling Accept()
 	l.mu.Lock()
 	if l.maxConns > 0 && l.activeConns >= int64(l.maxConns) {
 		l.mu.Unlock()
 		return nil, ErrMaxConnsReached
 	}
+	// Reserve the slot by incrementing the counter
+	l.activeConns++
 	l.mu.Unlock()
 
-	// Accept the connection first (without reserving a slot yet)
+	// Now call Accept() with the slot already reserved
 	conn, err := l.Listener.Accept()
 	if err != nil {
-		return nil, err
-	}
-
-	// Now that we have a successful connection, atomically check limits and add tracking
-	l.mu.Lock()
-	// Double-check the limit after accepting (another goroutine might have accepted while we were blocked)
-	if l.maxConns > 0 && l.activeConns >= int64(l.maxConns) {
+		// Accept failed, release the reserved slot
+		l.mu.Lock()
+		l.activeConns--
 		l.mu.Unlock()
-		// Close the connection we just accepted since we're over the limit
-		conn.Close()
-		return nil, ErrMaxConnsReached
+		return nil, err
 	}
 
 	// Wrap the connection for tracking
@@ -56,8 +52,8 @@ func (l *LimitedListener) Accept() (net.Conn, error) {
 		listener: l,
 	}
 
-	// Atomically add to both counter and active set
-	l.activeConns++
+	// Add to active set (connection count already incremented above)
+	l.mu.Lock()
 	l.activeSet[tracked] = struct{}{}
 	l.mu.Unlock()
 
