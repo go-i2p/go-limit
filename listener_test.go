@@ -251,3 +251,64 @@ func TestActiveSetDataRace(t *testing.T) {
 	}
 	connMutex.Unlock()
 }
+
+func TestSlotReservationRaceCondition(t *testing.T) {
+	mockL := newMockListener()
+	defer mockL.Close()
+
+	// Create a listener with a very small limit
+	limited := NewLimitedListener(mockL, WithMaxConnections(3))
+
+	// Pre-populate with enough connections to stress test the limit
+	for i := 0; i < 20; i++ {
+		mockL.sendConn(&mockConn{})
+	}
+
+	var wg sync.WaitGroup
+	var successfulConnections []net.Conn
+	var connMutex sync.Mutex
+
+	// Start many goroutines trying to accept connections concurrently
+	numGoroutines := 15
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := limited.Accept()
+			if err == nil && conn != nil {
+				connMutex.Lock()
+				successfulConnections = append(successfulConnections, conn)
+				connMutex.Unlock()
+			}
+		}()
+	}
+
+	// Wait for all accepts to complete
+	wg.Wait()
+
+	// Verify that we didn't exceed the connection limit
+	connMutex.Lock()
+	actualCount := len(successfulConnections)
+	connMutex.Unlock()
+
+	// Check that activeConns matches the actual number of successful connections
+	stats := limited.GetStats()
+
+	if actualCount != int(stats.ActiveConnections) {
+		t.Errorf("Slot reservation race detected: actualCount=%d, activeConns=%d",
+			actualCount, stats.ActiveConnections)
+	}
+
+	if actualCount > 3 {
+		t.Errorf("Connection limit exceeded: expected max 3, got %d successful connections", actualCount)
+	}
+
+	// Clean up
+	connMutex.Lock()
+	for _, conn := range successfulConnections {
+		conn.Close()
+	}
+	connMutex.Unlock()
+
+	t.Logf("Successfully limited to %d connections (limit: 3)", actualCount)
+}
